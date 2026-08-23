@@ -14,6 +14,125 @@
 
   const sb = window.supabase.createClient(cfg.url, cfg.key);
 
+  // ---------- OPTIMIZACIÓN DE IMÁGENES ----------
+  // Las fotos de producto se comprimen EN EL NAVEGADOR antes de subirlas.
+  // Guardamos 2 variantes por foto:
+  //   - full:  hasta 1400 px (ficha / zoom)
+  //   - thumb: hasta 640 px  (catálogo / carrito / miniaturas)
+  // Ambas en WebP y con cache de 1 año. Los nombres son únicos, por lo que
+  // podemos usar una cache larga sin riesgo de mostrar una versión vieja.
+  const IMAGE_CACHE_SECONDS = "31536000";
+  const FULL_MAX = 1400;
+  const THUMB_MAX = 640;
+  const FULL_QUALITY = 0.82;
+  const THUMB_QUALITY = 0.78;
+
+  function esImagenOptimizada(url) {
+    return /-(?:full|thumb)\.webp(?:\?|$)/i.test(String(url || ""));
+  }
+
+  function urlMiniaturaProducto(url) {
+    const s = String(url || "");
+    return /-full\.webp(?:\?|$)/i.test(s) ? s.replace(/-full\.webp(\?|$)/i, "-thumb.webp$1") : s;
+  }
+
+  function urlFullProducto(url) {
+    const s = String(url || "");
+    return /-thumb\.webp(?:\?|$)/i.test(s) ? s.replace(/-thumb\.webp(\?|$)/i, "-full.webp$1") : s;
+  }
+
+  function storagePathFromPublicUrl(url) {
+    try {
+      const u = new URL(String(url || ""));
+      const marker = "/storage/v1/object/public/productos/";
+      const i = u.pathname.indexOf(marker);
+      if (i < 0) return null;
+      return decodeURIComponent(u.pathname.slice(i + marker.length));
+    } catch (_) { return null; }
+  }
+
+  async function cargarBitmap(fileOrBlob) {
+    if (window.createImageBitmap) {
+      try { return await createImageBitmap(fileOrBlob, { imageOrientation: "from-image" }); }
+      catch (_) { try { return await createImageBitmap(fileOrBlob); } catch (_) {} }
+    }
+    return await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(fileOrBlob);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+      img.src = url;
+    });
+  }
+
+  async function aWebp(fileOrBlob, maxEdge, quality) {
+    const bitmap = await cargarBitmap(fileOrBlob);
+    const sw = bitmap.width || bitmap.naturalWidth || 1;
+    const sh = bitmap.height || bitmap.naturalHeight || 1;
+    const scale = Math.min(1, maxEdge / Math.max(sw, sh));
+    const w = Math.max(1, Math.round(sw * scale));
+    const h = Math.max(1, Math.round(sh * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    // Fondo blanco evita transparencias accidentales en fotos de producto.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    if (bitmap.close) try { bitmap.close(); } catch (_) {}
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((b) => b ? resolve(b) : reject(new Error("No se pudo comprimir la imagen")), "image/webp", quality);
+    });
+    return blob;
+  }
+
+  async function subirParOptimizado(fileOrBlob, id) {
+    const originalBytes = Number(fileOrBlob && fileOrBlob.size) || 0;
+    const [fullBlob, thumbBlob] = await Promise.all([
+      aWebp(fileOrBlob, FULL_MAX, FULL_QUALITY),
+      aWebp(fileOrBlob, THUMB_MAX, THUMB_QUALITY),
+    ]);
+    const rnd = Math.random().toString(36).slice(2, 8);
+    const base = String(id || "producto").replace(/[^a-z0-9_-]/gi, "-") + "-" + Date.now() + "-" + rnd;
+    const fullPath = base + "-full.webp";
+    const thumbPath = base + "-thumb.webp";
+
+    const upFull = await sb.storage.from("productos").upload(fullPath, fullBlob, {
+      upsert: false,
+      cacheControl: IMAGE_CACHE_SECONDS,
+      contentType: "image/webp",
+    });
+    if (upFull.error) throw upFull.error;
+
+    const upThumb = await sb.storage.from("productos").upload(thumbPath, thumbBlob, {
+      upsert: false,
+      cacheControl: IMAGE_CACHE_SECONDS,
+      contentType: "image/webp",
+    });
+    if (upThumb.error) {
+      // Evitar dejar un full huérfano si falla la miniatura.
+      try { await sb.storage.from("productos").remove([fullPath]); } catch (_) {}
+      throw upThumb.error;
+    }
+
+    const fullUrl = sb.storage.from("productos").getPublicUrl(fullPath).data?.publicUrl || null;
+    const thumbUrl = sb.storage.from("productos").getPublicUrl(thumbPath).data?.publicUrl || null;
+    return {
+      fullUrl, thumbUrl,
+      fullPath, thumbPath,
+      originalBytes,
+      optimizedBytes: fullBlob.size + thumbBlob.size,
+    };
+  }
+
+  async function optimizarDesdeUrl(url, id) {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error("No se pudo descargar la imagen actual (" + r.status + ")");
+    const blob = await r.blob();
+    if (!blob.type || !blob.type.startsWith("image/")) throw new Error("El archivo actual no es una imagen válida");
+    return await subirParOptimizado(blob, id);
+  }
+
   // id anónimo de visitante (para métricas), persistente en el navegador
   function sessionId() {
     let id = localStorage.getItem("dh_sid");
@@ -132,17 +251,6 @@
     async adminActualizarEstadoPedido(id, estado) {
       return await sb.from("pedidos").update({ estado, actualizado_en: new Date().toISOString() }).eq("id", id);
     },
-    async adminRetiros() {
-      const { data, error } = await sb.from("retiros_comision").select("*").order("fecha", { ascending: false });
-      if (error) { console.error("[DB] adminRetiros", error); return []; }
-      return data || [];
-    },
-    async adminAgregarRetiro(monto, fecha, nota) {
-      return await sb.from("retiros_comision").insert({ monto, fecha: fecha || new Date().toISOString().slice(0, 10), nota: nota || null });
-    },
-    async adminEliminarRetiro(id) {
-      return await sb.from("retiros_comision").delete().eq("id", id);
-    },
     async adminClientes() {
       const { data, error } = await sb.from("clientes").select("*").order("creado_en", { ascending: false });
       if (error) { console.error("[DB] adminClientes", error); return []; }
@@ -171,27 +279,52 @@
     async adminCambiarCodigo(viejo, nuevo) {
       return await sb.from("productos").update({ id: nuevo }).eq("id", viejo);
     },
-    // Sube una foto al bucket "productos" y devuelve la URL pública.
-    // path único (timestamp + aleatorio) para no pisar al subir varias a la vez.
-    async subirImagenProducto(file, id) {
+    // Sube una foto optimizada y devuelve ambas variantes.
+    async subirImagenProductoOptimizada(file, id) {
       try {
-        const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
-        const rnd = Math.random().toString(36).slice(2, 7);
-        const path = id + "-" + Date.now() + "-" + rnd + "." + ext;
-        const { error } = await sb.storage.from("productos").upload(path, file, { upsert: true, cacheControl: "3600" });
-        if (error) { console.error("[DB] subirImagen", error); return null; }
-        const { data } = sb.storage.from("productos").getPublicUrl(path);
-        return (data && data.publicUrl) || null;
-      } catch (e) { console.error("[DB] subirImagen", e); return null; }
+        if (!file || !String(file.type || "").startsWith("image/")) throw new Error("El archivo no es una imagen");
+        return await subirParOptimizado(file, id);
+      } catch (e) { console.error("[DB] subirImagenProductoOptimizada", e); return null; }
     },
-    // Sube varias fotos en orden y devuelve el array de URLs (las que fallan se omiten).
-    async subirImagenesProducto(files, id) {
-      const urls = [];
+    // Sube varias fotos optimizadas en orden.
+    async subirImagenesProductoOptimizadas(files, id) {
+      const out = [];
       for (const f of files) {
-        const u = await this.subirImagenProducto(f, id);
-        if (u) urls.push(u);
+        const r = await this.subirImagenProductoOptimizada(f, id);
+        if (r) out.push(r);
       }
-      return urls;
+      return out;
+    },
+    // Compatibilidad con código anterior: devuelve la URL full.
+    async subirImagenProducto(file, id) {
+      const r = await this.subirImagenProductoOptimizada(file, id);
+      return r?.fullUrl || null;
+    },
+    async subirImagenesProducto(files, id) {
+      const out = await this.subirImagenesProductoOptimizadas(files, id);
+      return out.map((x) => x.fullUrl).filter(Boolean);
+    },
+    // Helpers para usar miniaturas y migrar/eliminar archivos antiguos.
+    urlMiniaturaProducto,
+    urlFullProducto,
+    esImagenOptimizada,
+    async optimizarImagenProductoDesdeUrl(url, id) {
+      try { return await optimizarDesdeUrl(url, id); }
+      catch (e) { console.error("[DB] optimizarImagenProductoDesdeUrl", e); return null; }
+    },
+    async eliminarImagenesProducto(urls) {
+      const paths = new Set();
+      (Array.isArray(urls) ? urls : [urls]).filter(Boolean).forEach((url) => {
+        const p = storagePathFromPublicUrl(url);
+        if (!p) return;
+        paths.add(p);
+        if (/-full\.webp$/i.test(p)) paths.add(p.replace(/-full\.webp$/i, "-thumb.webp"));
+        if (/-thumb\.webp$/i.test(p)) paths.add(p.replace(/-thumb\.webp$/i, "-full.webp"));
+      });
+      if (!paths.size) return { ok: true };
+      const { error } = await sb.storage.from("productos").remove(Array.from(paths));
+      if (error) { console.warn("[DB] eliminarImagenesProducto", error); return { ok: false, error }; }
+      return { ok: true };
     },
     async adminEliminarProducto(id) {
       return await sb.from("productos").delete().eq("id", id);

@@ -63,7 +63,7 @@
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
     t.classList.add("active");
-    ["stats", "pedidos", "productos", "clientes", "resenas", "comision"].forEach((s) => $("sec-" + s).classList.toggle("hidden", s !== t.dataset.sec));
+    ["stats", "pedidos", "productos", "clientes", "resenas"].forEach((s) => $("sec-" + s).classList.toggle("hidden", s !== t.dataset.sec));
     cargarSeccion(t.dataset.sec);
   }));
 
@@ -73,7 +73,6 @@
     else if (s === "productos") renderProductos();
     else if (s === "clientes") renderClientes();
     else if (s === "resenas") renderResenas();
-    else if (s === "comision") renderComision();
   }
 
   // ---------- COMISIÓN GENIDEIA (15%) ----------
@@ -247,11 +246,12 @@
     el.innerHTML = '<div class="loading">Cargando productos…</div>';
     PRODUCTOS = await DB.adminTodosLosProductos();
 
-    const imgsDe = (p) => Array.isArray(p.imagenes) ? p.imagenes : (p.img_url ? [p.img_url] : []);
+    const imgsDe = (p) => (Array.isArray(p.imagenes) && p.imagenes.length) ? p.imagenes : (p.img_url ? [p.img_url] : []);
     const portada = (p) => p.img_url || imgsDe(p)[0] || "";
+    const miniUrl = (u) => (DB.urlMiniaturaProducto ? DB.urlMiniaturaProducto(u) : u);
     const galeriaThumbs = (imgs) => (!imgs || !imgs.length)
       ? '<span class="g-empty">Sin fotos todavía — agregá abajo 👇</span>'
-      : imgs.map((u, i) => '<span class="gthumb' + (i === 0 ? ' es-portada' : '') + '"><img src="' + esc(u) + '"><button class="gthumb-x" data-i="' + i + '" title="Quitar">×</button>' + (i === 0 ? '<em>portada</em>' : '') + '</span>').join('');
+      : imgs.map((u, i) => '<span class="gthumb' + (i === 0 ? ' es-portada' : '') + '"><img src="' + esc(miniUrl(u)) + '" loading="lazy" decoding="async"><button class="gthumb-x" data-i="' + i + '" title="Quitar">×</button>' + (i === 0 ? '<em>portada</em>' : '') + '</span>').join('');
 
     const filas = PRODUCTOS.map((p) =>
       '<tr data-id="' + esc(p.id) + '">' +
@@ -273,7 +273,10 @@
       '</div></td></tr>'
     ).join("");
 
-    el.innerHTML = '<div class="card"><div class="card-h">Productos (' + PRODUCTOS.length + ') <span style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">· editá los datos y tocá Guardar · "Detalle" abre galería + descripción</span></div>' +
+    const pendientesOpt = PRODUCTOS.filter((p) => imgsDe(p).some((u) => DB.esImagenOptimizada && !DB.esImagenOptimizada(u))).length;
+    el.innerHTML = '<div class="card"><div class="card-h" style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span>Productos (' + PRODUCTOS.length + ') <span style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">· las nuevas fotos se comprimen automáticamente</span></span>' +
+      '<span style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span id="img-opt-status" style="font-size:11px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">' + (pendientesOpt ? pendientesOpt + ' producto(s) con fotos antiguas' : '✓ imágenes optimizadas') + '</span>' +
+      (pendientesOpt ? '<button class="mini up" id="optimizar-imagenes" type="button">⚡ Optimizar fotos actuales</button>' : '') + '</span></div>' +
       '<div class="form-grid" id="nuevo-prod">' +
       '<input class="field" id="np-id" placeholder="Código (DON00XX) *" style="margin:0">' +
       '<input class="field" id="np-nombre" placeholder="Nombre *" style="margin:0">' +
@@ -352,11 +355,14 @@
       const id = inp.closest(".detalle-row").dataset.detalle;
       const p = PRODUCTOS.find((x) => x.id === id); if (!p) return;
       const txt = inp.closest("label").firstChild, prev = txt.textContent;
-      txt.textContent = "Subiendo…";
-      const urls = await DB.subirImagenesProducto(files, id);
-      if (!urls.length) { txt.textContent = "Error al subir"; setTimeout(() => txt.textContent = prev, 1500); return; }
+      txt.textContent = "Optimizando…";
+      const optimizadas = DB.subirImagenesProductoOptimizadas
+        ? await DB.subirImagenesProductoOptimizadas(files, id)
+        : (await DB.subirImagenesProducto(files, id)).map((u) => ({ fullUrl: u, thumbUrl: u }));
+      if (!optimizadas.length) { txt.textContent = "Error al subir"; setTimeout(() => txt.textContent = prev, 1500); return; }
+      const urls = optimizadas.map((x) => x.fullUrl).filter(Boolean);
       p.imagenes = (Array.isArray(p.imagenes) ? p.imagenes : []).concat(urls);
-      p.img_url = p.imagenes[0];
+      p.img_url = p.imagenes[0] ? miniUrl(p.imagenes[0]) : "";
       await DB.adminUpsertProducto({ id, imagenes: p.imagenes, img_url: p.img_url });
       refreshGaleria(id); txt.textContent = prev; inp.value = "";
     }));
@@ -367,11 +373,69 @@
       const id = cont.closest(".detalle-row").dataset.detalle;
       const p = PRODUCTOS.find((y) => y.id === id); if (!p) return;
       const imgs = Array.isArray(p.imagenes) ? p.imagenes.slice() : [];
-      imgs.splice(parseInt(x.dataset.i, 10), 1);
-      p.imagenes = imgs; p.img_url = imgs[0] || "";
+      const removed = imgs.splice(parseInt(x.dataset.i, 10), 1)[0];
+      p.imagenes = imgs; p.img_url = imgs[0] ? miniUrl(imgs[0]) : "";
       await DB.adminUpsertProducto({ id, imagenes: imgs, img_url: p.img_url });
       refreshGaleria(id);
+      if (removed && DB.eliminarImagenesProducto) DB.eliminarImagenesProducto([removed]);
     }));
+
+    // Optimización única de fotos que ya estaban guardadas antes de este fix.
+    const optBtn = $("optimizar-imagenes");
+    if (optBtn) optBtn.addEventListener("click", async () => {
+      const status = $("img-opt-status");
+      const pendientes = PRODUCTOS.filter((p) => imgsDe(p).some((u) => DB.esImagenOptimizada && !DB.esImagenOptimizada(u)));
+      if (!pendientes.length) { status.textContent = "✓ imágenes optimizadas"; optBtn.remove(); return; }
+      if (!confirm("Se van a comprimir las fotos actuales y reemplazar sus URLs. No cambia el diseño ni la calidad visible. Puede tardar unos minutos.")) return;
+      optBtn.disabled = true;
+      let fotosHechas = 0, bytesAntes = 0, bytesDespues = 0;
+      const totalFotos = pendientes.reduce((n, p) => n + imgsDe(p).filter((u) => !DB.esImagenOptimizada(u)).length, 0);
+      try {
+        for (let pi = 0; pi < PRODUCTOS.length; pi++) {
+          const p = PRODUCTOS[pi];
+          const actuales = imgsDe(p).filter(Boolean);
+          if (!actuales.length) continue;
+          const nuevas = [];
+          const antiguasParaBorrar = [];
+          let cambio = false;
+
+          for (let ii = 0; ii < actuales.length; ii++) {
+            const u = actuales[ii];
+            if (DB.esImagenOptimizada(u)) {
+              nuevas.push(DB.urlFullProducto ? DB.urlFullProducto(u) : u);
+              continue;
+            }
+            status.textContent = "Optimizando " + p.id + " · foto " + (ii + 1) + "/" + actuales.length + " · " + fotosHechas + "/" + totalFotos;
+            const r = await DB.optimizarImagenProductoDesdeUrl(u, p.id);
+            if (!r || !r.fullUrl) throw new Error("No se pudo optimizar una foto de " + p.id);
+            nuevas.push(r.fullUrl);
+            antiguasParaBorrar.push(u);
+            bytesAntes += r.originalBytes || 0;
+            bytesDespues += r.optimizedBytes || 0;
+            fotosHechas++;
+            cambio = true;
+          }
+
+          const portadaNueva = nuevas[0] ? miniUrl(nuevas[0]) : "";
+          if (cambio || p.img_url !== portadaNueva) {
+            const { error } = await DB.adminUpsertProducto({ id: p.id, imagenes: nuevas, img_url: portadaNueva });
+            if (error) throw error;
+            p.imagenes = nuevas;
+            p.img_url = portadaNueva;
+            if (antiguasParaBorrar.length && DB.eliminarImagenesProducto) await DB.eliminarImagenesProducto(antiguasParaBorrar);
+          }
+        }
+        const ahorro = bytesAntes > 0 ? Math.max(0, Math.round((1 - bytesDespues / bytesAntes) * 100)) : 0;
+        status.textContent = "✓ Listo · " + fotosHechas + " fotos optimizadas" + (bytesAntes ? " · ~" + ahorro + "% menos peso" : "");
+        optBtn.remove();
+        setTimeout(renderProductos, 1200);
+      } catch (err) {
+        console.error("[Admin] optimización de imágenes", err);
+        status.textContent = "Error: " + (err.message || "no se pudo completar");
+        status.style.color = "var(--danger)";
+        optBtn.disabled = false;
+      }
+    });
 
     // guardar descripción
     el.querySelectorAll(".guardar-detalle").forEach((b) => b.addEventListener("click", async () => {
@@ -444,59 +508,6 @@
       b.disabled = true;
       await DB.adminEliminarResena(b.dataset.id);
       renderResenas();
-    }));
-  }
-
-  // ---------- COMISIÓN: historial de retiros ----------
-  async function renderComision() {
-    const el = $("sec-comision");
-    el.innerHTML = '<div class="loading">Cargando comisión…</div>';
-    const [pedidos, retiros] = await Promise.all([DB.adminPedidos(), DB.adminRetiros()]);
-    const pagados = pedidos.filter((p) => p.estado !== "pendiente_pago" && p.estado !== "cancelado");
-    const ventasTotal = pagados.reduce((s, p) => s + Number(p.total || 0), 0);
-    const comisionGenerada = Math.round(ventasTotal * COMISION);
-    const totalRetirado = retiros.reduce((s, r) => s + Number(r.monto || 0), 0);
-    const pendiente = comisionGenerada - totalRetirado;
-
-    el.innerHTML =
-      '<div class="card" style="border:1px solid var(--gold)">' +
-      '<div class="card-h">Comisión GENIDEIA (15%) <span style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">· historial de retiros</span></div>' +
-      '<div class="cards" style="margin-bottom:14px">' +
-      '<div class="stat"><div class="lbl">Comisión generada</div><div class="num">' + money(comisionGenerada) + '</div></div>' +
-      '<div class="stat"><div class="lbl">Ya retirado</div><div class="num">' + money(totalRetirado) + '</div></div>' +
-      '<div class="stat" style="border-color:var(--gold)"><div class="lbl">Pendiente de retirar</div><div class="num" style="color:var(--gold-soft)">' + money(pendiente) + '</div></div>' +
-      '</div>' +
-      '<form id="retiro-form" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:18px">' +
-      '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">Monto<input type="number" id="retiro-monto" min="1" step="1" required style="width:140px"></label>' +
-      '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">Fecha<input type="date" id="retiro-fecha" value="' + new Date().toISOString().slice(0, 10) + '"></label>' +
-      '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">Nota (opcional)<input type="text" id="retiro-nota" placeholder="ej: transferencia Brou" style="width:220px"></label>' +
-      '<button type="submit" class="mini">Registrar retiro</button>' +
-      '</form>' +
-      (retiros.length
-        ? '<table><thead><tr><th>Fecha</th><th>Monto</th><th>Nota</th><th></th></tr></thead><tbody>' +
-          retiros.map((r) =>
-            '<tr><td>' + esc(r.fecha) + '</td><td>' + money(r.monto) + '</td><td>' + esc(r.nota || "—") + '</td>' +
-            '<td class="row-actions"><button class="mini del retiro-borrar" data-id="' + r.id + '">×</button></td></tr>'
-          ).join("") + '</tbody></table>'
-        : '<div class="empty">Todavía no registraste ningún retiro.</div>') +
-      '</div>';
-
-    $("retiro-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const monto = Number($("retiro-monto").value);
-      if (!monto || monto <= 0) return;
-      const fechaVal = $("retiro-fecha").value;
-      const nota = $("retiro-nota").value.trim();
-      const btn = e.target.querySelector("button[type=submit]");
-      btn.disabled = true;
-      await DB.adminAgregarRetiro(monto, fechaVal, nota);
-      renderComision();
-    });
-    el.querySelectorAll(".retiro-borrar").forEach((b) => b.addEventListener("click", async () => {
-      if (!confirm("¿Eliminar este retiro del historial? No se puede deshacer.")) return;
-      b.disabled = true;
-      await DB.adminEliminarRetiro(b.dataset.id);
-      renderComision();
     }));
   }
 

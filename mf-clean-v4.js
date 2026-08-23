@@ -7,6 +7,7 @@ const ON_SALE=new Set(['DON0002','DON0003','DON0007','DON0010','DON0013','DON001
 const salePrice=p=>ON_SALE.has(p.id)?Math.round(p.price*0.9):p.price;
 const priceHTML=p=>ON_SALE.has(p.id)?`<s class="price-old">${money(p.price)}</s> <span class="price-sale">${money(salePrice(p))}</span>`:money(p.price);
 const safe=v=>String(v??'');
+const imageThumb=u=>{const s=safe(u);return /-full\.webp(?:\?|$)/i.test(s)?s.replace(/-full\.webp(\?|$)/i,'-thumb.webp$1'):s};
 const readJSON=(key,fallback)=>{try{const v=JSON.parse(localStorage.getItem(key)||'null');if(Array.isArray(fallback))return Array.isArray(v)?v:fallback;if(fallback&&typeof fallback==='object')return v&&!Array.isArray(v)&&typeof v==='object'?v:fallback;return v??fallback}catch{return fallback}};
 let products=[];let loadingProducts=true;
 let state={view:'home',style:localStorage.getItem('dh-style')||'',fav:readJSON('dh-fav',[]),cart:readJSON('dh-cart',{}),selected:null,search:'',cat:'all',sort:'relevant',cartOpen:false,favOpen:false,mobile:false,service:false,zoom:false,checkout:false,step:1,order:null,track:null,data:{email:'',name:'',phone:'',dept:'Montevideo',city:'',address:'',notes:'',shipping:'domicilio',shippingName:'Envío a domicilio',payment:'mp'}};
