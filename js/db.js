@@ -132,6 +132,17 @@
     async adminActualizarEstadoPedido(id, estado) {
       return await sb.from("pedidos").update({ estado, actualizado_en: new Date().toISOString() }).eq("id", id);
     },
+    async adminRetiros() {
+      const { data, error } = await sb.from("retiros_comision").select("*").order("fecha", { ascending: false });
+      if (error) { console.error("[DB] adminRetiros", error); return []; }
+      return data || [];
+    },
+    async adminAgregarRetiro(monto, fecha, nota) {
+      return await sb.from("retiros_comision").insert({ monto, fecha: fecha || new Date().toISOString().slice(0, 10), nota: nota || null });
+    },
+    async adminEliminarRetiro(id) {
+      return await sb.from("retiros_comision").delete().eq("id", id);
+    },
     async adminClientes() {
       const { data, error } = await sb.from("clientes").select("*").order("creado_en", { ascending: false });
       if (error) { console.error("[DB] adminClientes", error); return []; }
@@ -189,6 +200,42 @@
       const { data, error } = await sb.from("productos").select("*").order("orden", { ascending: true });
       if (error) { console.error("[DB] adminTodosLosProductos", error); return []; }
       return data || [];
+    },
+
+    // ---------- LIQUIDACIONES DE COMISIÓN ----------
+    async adminLiquidaciones() {
+      const { data, error } = await sb.from("liquidaciones_comision").select("*").order("fecha", { ascending: false });
+      if (error) { console.error("[DB] adminLiquidaciones", error); return []; }
+      return data || [];
+    },
+    // Sube el comprobante al bucket privado "comprobantes" y devuelve la ruta interna (no la URL pública).
+    async subirComprobante(file) {
+      try {
+        const ext = (file.name.split(".").pop() || "pdf").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "pdf";
+        const path = Date.now() + "-" + Math.random().toString(36).slice(2, 7) + "." + ext;
+        const { error } = await sb.storage.from("comprobantes").upload(path, file, { upsert: true, cacheControl: "3600" });
+        if (error) { console.error("[DB] subirComprobante", error); return null; }
+        return path;
+      } catch (e) { console.error("[DB] subirComprobante", e); return null; }
+    },
+    // URL temporal (5 min) para ver/descargar un comprobante del bucket privado.
+    async urlComprobante(path) {
+      if (!path) return null;
+      const { data, error } = await sb.storage.from("comprobantes").createSignedUrl(path, 300);
+      if (error) { console.error("[DB] urlComprobante", error); return null; }
+      return data?.signedUrl || null;
+    },
+    async adminCrearLiquidacion(l) {
+      return await sb.from("liquidaciones_comision").insert({
+        fecha: l.fecha,
+        ventas_total: l.ventas_total || 0,
+        comision_total: l.comision_total || 0,
+        comprobante_path: l.comprobante_path || null,
+        nota: l.nota || null,
+      });
+    },
+    async adminEliminarLiquidacion(id) {
+      return await sb.from("liquidaciones_comision").delete().eq("id", id);
     },
 
     // ---------- RESEÑAS ----------

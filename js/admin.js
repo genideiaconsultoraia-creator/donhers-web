@@ -63,7 +63,7 @@
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
     t.classList.add("active");
-    ["stats", "pedidos", "productos", "clientes", "resenas"].forEach((s) => $("sec-" + s).classList.toggle("hidden", s !== t.dataset.sec));
+    ["stats", "pedidos", "productos", "clientes", "resenas", "comision"].forEach((s) => $("sec-" + s).classList.toggle("hidden", s !== t.dataset.sec));
     cargarSeccion(t.dataset.sec);
   }));
 
@@ -73,39 +73,114 @@
     else if (s === "productos") renderProductos();
     else if (s === "clientes") renderClientes();
     else if (s === "resenas") renderResenas();
+    else if (s === "comision") renderComision();
   }
 
   // ---------- COMISIÓN GENIDEIA (15%) ----------
   // Se calcula solo sobre pedidos con pago confirmado (no pendientes ni cancelados).
+  // El "período actual" son los pedidos posteriores a la última liquidación marcada como pagada:
+  // al marcar una liquidación, el contador vuelve a arrancar en $0.
   const COMISION = 0.15;
-  function comisionHTML(pedidos) {
+  function comisionHTML(pedidos, liquidaciones) {
     const pagados = pedidos.filter((p) => p.estado !== "pendiente_pago" && p.estado !== "cancelado");
-    const ventasTotal = pagados.reduce((s, p) => s + Number(p.total || 0), 0);
+    const ultima = liquidaciones[0] || null; // ya vienen ordenadas por fecha desc
+    const corte = ultima ? new Date(ultima.fecha + "T23:59:59") : null;
+    const actuales = corte ? pagados.filter((p) => new Date(p.creado_en) > corte) : pagados;
+
+    const ventasTotal = actuales.reduce((s, p) => s + Number(p.total || 0), 0);
     const comisionTotal = Math.round(ventasTotal * COMISION);
-    // agrupar por mes (YYYY-MM)
-    const porMes = {};
-    pagados.forEach((p) => {
-      const d = new Date(p.creado_en);
-      const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
-      if (!porMes[k]) porMes[k] = { ventas: 0, n: 0, label: d.toLocaleDateString("es-UY", { month: "long" }) + " " + d.getFullYear() };
-      porMes[k].ventas += Number(p.total || 0);
-      porMes[k].n += 1;
-    });
-    const meses = Object.entries(porMes).sort((a, b) => b[0].localeCompare(a[0]));
-    const filas = meses.map(([k, m]) =>
-      '<tr><td style="text-transform:capitalize">' + esc(m.label) + '</td><td>' + m.n + '</td><td>' + money(m.ventas) + '</td><td style="color:var(--gold-soft);font-weight:600">' + money(Math.round(m.ventas * COMISION)) + '</td></tr>'
+
+    const filasHist = liquidaciones.map((l) =>
+      '<tr data-id="' + esc(l.id) + '">' +
+      '<td>' + new Date(l.fecha + "T00:00:00").toLocaleDateString("es-UY", { day: "2-digit", month: "short", year: "numeric" }) + '</td>' +
+      '<td>' + money(l.ventas_total) + '</td>' +
+      '<td style="color:var(--gold-soft);font-weight:600">' + money(l.comision_total) + '</td>' +
+      '<td>' + (l.nota ? esc(l.nota) : '<span style="color:var(--muted)">—</span>') + '</td>' +
+      '<td>' + (l.comprobante_path ? '<button class="mini ver-comprobante" data-path="' + esc(l.comprobante_path) + '">Ver comprobante</button>' : '<span style="color:var(--muted)">Sin comprobante</span>') + '</td>' +
+      '<td class="row-actions"><button class="mini del liq-borrar" data-id="' + esc(l.id) + '">×</button></td></tr>'
     ).join("");
+
     return '<div class="card" style="border:1px solid var(--gold)">' +
-      '<div class="card-h">Comisión GENIDEIA (15%) <span style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">· sobre pedidos con pago confirmado</span></div>' +
+      '<div class="card-h">Comisión GENIDEIA (15%) <span style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">· período actual' + (ultima ? " · desde " + new Date(ultima.fecha + "T00:00:00").toLocaleDateString("es-UY", { day: "2-digit", month: "short" }) : "") + '</span></div>' +
       '<div class="cards" style="margin-bottom:14px">' +
-      '<div class="stat"><div class="lbl">Ventas confirmadas</div><div class="num">' + money(ventasTotal) + '</div></div>' +
-      '<div class="stat" style="border-color:var(--gold)"><div class="lbl">Comisión total a transferir</div><div class="num" style="color:var(--gold-soft)">' + money(comisionTotal) + '</div></div>' +
-      '<div class="stat"><div class="lbl">Pedidos pagados</div><div class="num">' + pagados.length + '</div></div>' +
+      '<div class="stat"><div class="lbl">Ventas del período</div><div class="num">' + money(ventasTotal) + '</div></div>' +
+      '<div class="stat" style="border-color:var(--gold)"><div class="lbl">Comisión a transferir</div><div class="num" style="color:var(--gold-soft)">' + money(comisionTotal) + '</div></div>' +
+      '<div class="stat"><div class="lbl">Pedidos del período</div><div class="num">' + actuales.length + '</div></div>' +
       '</div>' +
-      (meses.length
-        ? '<table><thead><tr><th>Mes</th><th>Pedidos</th><th>Ventas</th><th>Comisión 15%</th></tr></thead><tbody>' + filas + '</tbody></table>'
-        : '<div class="empty">Todavía no hay pagos confirmados para calcular la comisión.</div>') +
+      (actuales.length
+        ? '<div style="padding:0 16px 16px"><button class="btn" id="marcar-pagada" style="width:auto;padding:10px 18px">Marcar comisión como pagada hoy</button></div>'
+        : '<div class="empty">Todavía no hay ventas pendientes de liquidar en este período.</div>') +
+      '<div id="form-liquidacion" class="hidden" style="padding:0 16px 16px">' +
+      '<div class="form-grid" style="border:none;padding:12px;background:var(--panel2);border-radius:10px">' +
+      '<input class="field" id="liq-fecha" type="date" style="margin:0">' +
+      '<input class="field" id="liq-nota" placeholder="Nota (opcional)" style="margin:0">' +
+      '<label class="mini up" style="text-align:center;line-height:2.4">＋ Adjuntar comprobante<input type="file" id="liq-comprobante" accept="image/*,.pdf" style="display:none"></label>' +
+      '<button class="btn" id="liq-confirmar" style="width:auto;padding:11px 16px">Confirmar</button>' +
+      '</div><p id="liq-archivo-nombre" style="font-size:12px;color:var(--muted);margin-top:6px"></p>' +
+      '<p id="liq-msg" style="font-size:13px;margin-top:6px"></p>' +
+      '</div>' +
+      '<div class="card-h" style="border-top:1px solid var(--line)">Historial de liquidaciones' +
+      (liquidaciones.length ? '' : '') + '</div>' +
+      (liquidaciones.length
+        ? '<table><thead><tr><th>Fecha</th><th>Ventas</th><th>Comisión pagada</th><th>Nota</th><th>Comprobante</th><th></th></tr></thead><tbody>' + filasHist + '</tbody></table>'
+        : '<div class="empty">Todavía no se marcó ninguna comisión como pagada.</div>') +
       '</div>';
+  }
+
+  function wireComision(el, pedidos, liquidaciones) {
+    const btnAbrir = el.querySelector("#marcar-pagada");
+    const formBox = el.querySelector("#form-liquidacion");
+    if (btnAbrir) btnAbrir.addEventListener("click", () => {
+      formBox.classList.toggle("hidden");
+      el.querySelector("#liq-fecha").value = new Date().toISOString().slice(0, 10);
+    });
+
+    let archivoElegido = null;
+    const inputFile = el.querySelector("#liq-comprobante");
+    if (inputFile) inputFile.addEventListener("change", () => {
+      archivoElegido = inputFile.files && inputFile.files[0] ? inputFile.files[0] : null;
+      el.querySelector("#liq-archivo-nombre").textContent = archivoElegido ? "Adjunto: " + archivoElegido.name : "";
+    });
+
+    const btnConfirmar = el.querySelector("#liq-confirmar");
+    if (btnConfirmar) btnConfirmar.addEventListener("click", async () => {
+      const fecha = el.querySelector("#liq-fecha").value;
+      const nota = el.querySelector("#liq-nota").value.trim();
+      const msg = el.querySelector("#liq-msg");
+      if (!fecha) { msg.textContent = "Elegí una fecha."; msg.style.color = "var(--danger)"; return; }
+
+      const ultima = liquidaciones[0] || null;
+      const corte = ultima ? new Date(ultima.fecha + "T23:59:59") : null;
+      const pagados = pedidos.filter((p) => p.estado !== "pendiente_pago" && p.estado !== "cancelado");
+      const actuales = corte ? pagados.filter((p) => new Date(p.creado_en) > corte) : pagados;
+      const ventasTotal = actuales.reduce((s, p) => s + Number(p.total || 0), 0);
+      const comisionTotal = Math.round(ventasTotal * COMISION);
+
+      btnConfirmar.disabled = true; btnConfirmar.textContent = "Guardando…"; msg.textContent = "";
+      let comprobantePath = null;
+      if (archivoElegido) {
+        comprobantePath = await DB.subirComprobante(archivoElegido);
+        if (!comprobantePath) { msg.textContent = "No se pudo subir el comprobante. Probá de nuevo."; msg.style.color = "var(--danger)"; btnConfirmar.disabled = false; btnConfirmar.textContent = "Confirmar"; return; }
+      }
+      const r = await DB.adminCrearLiquidacion({ fecha, ventas_total: ventasTotal, comision_total: comisionTotal, comprobante_path: comprobantePath, nota });
+      btnConfirmar.disabled = false; btnConfirmar.textContent = "Confirmar";
+      if (r && r.error) { msg.textContent = "Error al guardar: " + r.error.message; msg.style.color = "var(--danger)"; return; }
+      renderStats();
+    });
+
+    el.querySelectorAll(".ver-comprobante").forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true; const prev = b.textContent; b.textContent = "…";
+      const url = await DB.urlComprobante(b.dataset.path);
+      b.disabled = false; b.textContent = prev;
+      if (url) window.open(url, "_blank"); else alert("No se pudo abrir el comprobante.");
+    }));
+
+    el.querySelectorAll(".liq-borrar").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("¿Eliminar esta liquidación del historial? Los pedidos que cubría volverán a contarse como pendientes.")) return;
+      b.disabled = true;
+      await DB.adminEliminarLiquidacion(b.dataset.id);
+      renderStats();
+    }));
   }
 
   // ---------- ESTADÍSTICAS ----------
@@ -114,6 +189,7 @@
     el.innerHTML = '<div class="loading">Cargando métricas…</div>';
     const conteo = await DB.adminConteoEventos();
     const pedidos = await DB.adminPedidos();
+    const liquidaciones = await DB.adminLiquidaciones();
     if (!PRODUCTOS.length) PRODUCTOS = await DB.adminTodosLosProductos();
     const nombre = (id) => { const p = PRODUCTOS.find((x) => x.id === id); return p ? p.nombre : id; };
     const cont = (tipo) => conteo[tipo] || 0;
@@ -123,7 +199,7 @@
     const max = top.length ? top[0][1] : 1;
 
     el.innerHTML =
-      comisionHTML(pedidos) +
+      comisionHTML(pedidos, liquidaciones) +
       '<div class="cards">' +
       stat("Visitas", cont("visita")) +
       stat("Vistas de producto", cont("ver_producto")) +
@@ -136,6 +212,8 @@
         '<div class="bar-row"><span class="name">' + esc(nombre(id)) + '</span><span class="bar-track"><span class="bar-fill" style="width:' + Math.round(v / max * 100) + '%"></span></span><span class="val">' + v + '</span></div>'
       ).join("") + '</div>' : '<div class="empty">Todavía no hay datos de interacción.</div>') +
       '</div>';
+
+    wireComision(el.querySelector(".card"), pedidos, liquidaciones);
   }
   const stat = (lbl, num) => '<div class="stat"><div class="lbl">' + lbl + '</div><div class="num">' + num + '</div></div>';
 
@@ -366,6 +444,59 @@
       b.disabled = true;
       await DB.adminEliminarResena(b.dataset.id);
       renderResenas();
+    }));
+  }
+
+  // ---------- COMISIÓN: historial de retiros ----------
+  async function renderComision() {
+    const el = $("sec-comision");
+    el.innerHTML = '<div class="loading">Cargando comisión…</div>';
+    const [pedidos, retiros] = await Promise.all([DB.adminPedidos(), DB.adminRetiros()]);
+    const pagados = pedidos.filter((p) => p.estado !== "pendiente_pago" && p.estado !== "cancelado");
+    const ventasTotal = pagados.reduce((s, p) => s + Number(p.total || 0), 0);
+    const comisionGenerada = Math.round(ventasTotal * COMISION);
+    const totalRetirado = retiros.reduce((s, r) => s + Number(r.monto || 0), 0);
+    const pendiente = comisionGenerada - totalRetirado;
+
+    el.innerHTML =
+      '<div class="card" style="border:1px solid var(--gold)">' +
+      '<div class="card-h">Comisión GENIDEIA (15%) <span style="font-size:12px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-weight:400">· historial de retiros</span></div>' +
+      '<div class="cards" style="margin-bottom:14px">' +
+      '<div class="stat"><div class="lbl">Comisión generada</div><div class="num">' + money(comisionGenerada) + '</div></div>' +
+      '<div class="stat"><div class="lbl">Ya retirado</div><div class="num">' + money(totalRetirado) + '</div></div>' +
+      '<div class="stat" style="border-color:var(--gold)"><div class="lbl">Pendiente de retirar</div><div class="num" style="color:var(--gold-soft)">' + money(pendiente) + '</div></div>' +
+      '</div>' +
+      '<form id="retiro-form" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:18px">' +
+      '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">Monto<input type="number" id="retiro-monto" min="1" step="1" required style="width:140px"></label>' +
+      '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">Fecha<input type="date" id="retiro-fecha" value="' + new Date().toISOString().slice(0, 10) + '"></label>' +
+      '<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">Nota (opcional)<input type="text" id="retiro-nota" placeholder="ej: transferencia Brou" style="width:220px"></label>' +
+      '<button type="submit" class="mini">Registrar retiro</button>' +
+      '</form>' +
+      (retiros.length
+        ? '<table><thead><tr><th>Fecha</th><th>Monto</th><th>Nota</th><th></th></tr></thead><tbody>' +
+          retiros.map((r) =>
+            '<tr><td>' + esc(r.fecha) + '</td><td>' + money(r.monto) + '</td><td>' + esc(r.nota || "—") + '</td>' +
+            '<td class="row-actions"><button class="mini del retiro-borrar" data-id="' + r.id + '">×</button></td></tr>'
+          ).join("") + '</tbody></table>'
+        : '<div class="empty">Todavía no registraste ningún retiro.</div>') +
+      '</div>';
+
+    $("retiro-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const monto = Number($("retiro-monto").value);
+      if (!monto || monto <= 0) return;
+      const fechaVal = $("retiro-fecha").value;
+      const nota = $("retiro-nota").value.trim();
+      const btn = e.target.querySelector("button[type=submit]");
+      btn.disabled = true;
+      await DB.adminAgregarRetiro(monto, fechaVal, nota);
+      renderComision();
+    });
+    el.querySelectorAll(".retiro-borrar").forEach((b) => b.addEventListener("click", async () => {
+      if (!confirm("¿Eliminar este retiro del historial? No se puede deshacer.")) return;
+      b.disabled = true;
+      await DB.adminEliminarRetiro(b.dataset.id);
+      renderComision();
     }));
   }
 
