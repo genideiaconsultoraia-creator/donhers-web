@@ -223,14 +223,16 @@
     const pedidos = await DB.adminPedidos();
     if (!pedidos.length) { el.innerHTML = '<div class="card"><div class="empty">Todavía no hay pedidos.</div></div>'; return; }
     el.innerHTML = '<div class="card"><div class="card-h">Pedidos (' + pedidos.length + ')</div>' +
-      '<table><thead><tr><th>Fecha</th><th>N°</th><th>Cliente</th><th>Total</th><th>Pago</th><th>Estado</th></tr></thead><tbody>' +
+      '<table><thead><tr><th>Fecha</th><th>N°</th><th>Cliente</th><th>Total</th><th>Pago</th><th>Estado</th><th></th></tr></thead><tbody>' +
       pedidos.map((p) =>
         '<tr><td>' + fecha(p.creado_en) + '</td><td>' + esc(p.id) + '</td>' +
         '<td>' + esc(p.cliente_nombre || "—") + '<br><span style="color:var(--muted);font-size:12px">' + esc(p.cliente_email || "") + '</span></td>' +
         '<td>' + money(p.total) + '</td><td><span class="pill">' + esc(p.metodo_pago || "—") + '</span></td>' +
         '<td><select class="estado" data-id="' + esc(p.id) + '">' +
         ESTADOS.map((s) => '<option value="' + s + '"' + (s === p.estado ? " selected" : "") + '>' + ESTADO_LABEL[s] + '</option>').join("") +
-        '</select></td></tr>'
+        '</select></td>' +
+        '<td><button class="mini pedido-toggle" type="button" data-id="' + esc(p.id) + '">Ver detalle</button></td></tr>' +
+        '<tr class="detalle-row hidden" data-detalle="' + esc(p.id) + '"><td colspan="7">' + detallePedidoHTML(p) + '</td></tr>'
       ).join("") + '</tbody></table></div>';
 
     el.querySelectorAll("select.estado").forEach((sel) => sel.addEventListener("change", async () => {
@@ -238,6 +240,47 @@
       await DB.adminActualizarEstadoPedido(sel.dataset.id, sel.value);
       sel.disabled = false;
     }));
+
+    el.querySelectorAll(".pedido-toggle").forEach((b) => b.addEventListener("click", () => {
+      const row = el.querySelector('.detalle-row[data-detalle="' + CSS.escape(b.dataset.id) + '"]');
+      if (!row) return;
+      const abierto = row.classList.toggle("hidden");
+      b.textContent = abierto ? "Ver detalle" : "Ocultar detalle";
+    }));
+  }
+
+  // Detalle desplegable de un pedido: datos de entrega + productos comprados.
+  function detallePedidoHTML(p) {
+    const e = p.datos_envio || {};
+    const dir = [e.address, e.city, e.dept].filter(Boolean).join(", ");
+    const filas = [
+      ["Nombre", e.name || p.cliente_nombre],
+      ["Email", e.email || p.cliente_email],
+      ["Teléfono", e.phone],
+      ["Método de envío", e.shippingMethodName || e.shippingMethodId],
+      ["Departamento", e.dept],
+      ["Ciudad / localidad", e.city],
+      ["Dirección", e.address],
+      ["Observaciones", e.notes],
+    ].filter((r) => r[1]);
+
+    const entrega = filas.length
+      ? '<table class="detalle-kv">' + filas.map((r) =>
+          '<tr><th>' + esc(r[0]) + '</th><td>' + esc(r[1]) + '</td></tr>').join("") + '</table>'
+      : '<p style="color:var(--muted);font-size:13px">Venta manual — sin datos de envío cargados.</p>';
+
+    const items = Array.isArray(p.pedido_items) ? p.pedido_items : [];
+    const productos = items.length
+      ? '<table class="detalle-kv"><thead><tr><th>Producto</th><th>Cant.</th><th>Precio</th></tr></thead><tbody>' +
+        items.map((i) =>
+          '<tr><td>' + esc(i.nombre || i.producto_id || "—") + '</td><td>' + esc(i.qty || 1) +
+          '</td><td>' + money(i.precio) + '</td></tr>').join("") + '</tbody></table>'
+      : '<p style="color:var(--muted);font-size:13px">Sin ítems registrados.</p>';
+
+    return '<div class="detalle-box">' +
+      '<div class="det-col"><div class="det-lbl">Datos de entrega</div>' + entrega + (dir ? '<p style="font-size:12px;color:var(--gold-soft);margin-top:8px">' + esc(dir) + '</p>' : '') + '</div>' +
+      '<div class="det-col"><div class="det-lbl">Productos del pedido</div>' + productos + '</div>' +
+      '</div>';
   }
 
   // ---------- PRODUCTOS ----------
