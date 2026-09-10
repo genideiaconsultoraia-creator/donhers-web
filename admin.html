@@ -86,6 +86,14 @@
     .det-desc textarea{width:100%;resize:vertical;line-height:1.45}
     .guardar-detalle{margin-top:10px}
 
+    /* ---- Detalle de pedido ---- */
+    .detalle-kv{width:100%;font-size:13px}
+    .detalle-kv th{padding:6px 10px 6px 0;border:none;text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);white-space:nowrap;vertical-align:top;width:1%}
+    .detalle-kv td{padding:6px 0;border:none;color:var(--cream);white-space:normal}
+    .detalle-kv thead th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--line);padding-bottom:6px}
+    .detalle-kv tbody td{border-bottom:1px solid rgba(255,255,255,.05)}
+    .pedido-toggle{white-space:nowrap}
+
     /* ---- Teléfono ---- */
     @media (max-width:680px){
       .topbar{padding:13px 14px}
@@ -146,7 +154,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="js/config.js?v=2"></script>
-  <script src="js/db.js?v=egress-fix-1"></script>
-  <script src="js/admin.js?v=egress-fix-1"></script>
+  <script src="js/db.js?v=pedido-detalle-1"></script>
+  <script src="js/admin.js?v=pedido-detalle-1"></script>
 </body>
 </html>

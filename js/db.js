@@ -244,7 +244,12 @@
 
     // ---------- ADMIN (requieren sesión logueada Y ser admin; RLS lo exige) ----------
     async adminPedidos() {
-      const { data, error } = await sb.from("pedidos").select("*").order("creado_en", { ascending: false });
+      // Traemos también los ítems de cada pedido (qué compró el cliente)
+      // para mostrarlos en el detalle desplegable del panel.
+      const { data, error } = await sb
+        .from("pedidos")
+        .select("*, pedido_items(nombre, precio, qty, producto_id)")
+        .order("creado_en", { ascending: false });
       if (error) { console.error("[DB] adminPedidos", error); return []; }
       return data || [];
     },
